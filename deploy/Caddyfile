@@ -1,0 +1,7 @@
+# HTTPS for the public demo: Caddy gets and renews the certificate for SITE_ADDRESS by itself
+# and redirects plain HTTP to HTTPS.
+{$SITE_ADDRESS} {
+	encode gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy app:7860
+}

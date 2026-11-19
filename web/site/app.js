@@ -7,6 +7,9 @@
 const GS = '/geoserver/demo';
 const WFST_URL = '/api/wfst';
 const NS = 'http://cityops.example/demo';
+/* Two data sources share this file: the real server (PostGIS + GeoServer, the default), or for the
+   static online demo, sample data kept in the visitor's browser (static-api.js, window.CITYOPS_STATIC). */
+const STATIC = !!window.CITYOPS_STATIC;
 
 const STATUS = {
   new:       { label: 'New',       color: '#2563eb' },
@@ -67,16 +70,27 @@ const BASEMAPS = {
   Satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
     maxZoom: 19, attribution: 'Imagery &copy; Esri' })
 };
-let currentBase = BASEMAPS.Light.addTo(map);
+let currentBase = BASEMAPS.Streets.addTo(map);   // default basemap
 
-const districtsWms = L.tileLayer.wms(`${GS}/wms`, {
+/* District colours: map images drawn by GeoServer, or in the static demo, shapes drawn in the browser
+   (their own pane: above the basemap, below the hotspots, and ignoring the mouse). */
+map.createPane('districtsPane').style.zIndex = 350;
+map.getPane('districtsPane').style.pointerEvents = 'none';
+const districtsBase = (STATIC ? L.layerGroup() : L.tileLayer.wms(`${GS}/wms`, {
   layers: 'demo:district_stats', format: 'image/png', transparent: true, version: '1.1.1', _ts: Date.now(),
   attribution: 'Districts &copy; CAPMAS'
-}).addTo(map);
+})).addTo(map);
+const districtsRenderer = L.svg({ pane: 'districtsPane' });
+const DISTRICT_FILL = n => n >= 12 ? '#0d9488' : n >= 7 ? '#5eead4' : '#ccfbf1';   // same classes as the SLD
 const districtLabels = L.layerGroup().addTo(map);
 const requestsLayer = L.layerGroup().addTo(map);
 const heatLayer = L.heatLayer([], { radius: 26, blur: 20, maxZoom: 15, max: 2.5, minOpacity: 0.3,
   gradient: { 0.25: '#fde68a', 0.5: '#f59e0b', 0.75: '#ef4444', 1: '#7f1d1d' } });
+// Leaflet.heat redraws on the next animation frame; if the layer is switched off before that frame,
+// its redraw would run without a map and throw. Skip the redraw in that case.
+const heatRedraw = heatLayer._redraw;
+heatLayer._redraw = function () { if (this._map) heatRedraw.call(this); else this._frame = null; };
+heatLayer.addTo(map);   // hotspots are shown from the start; the points arrive with the first load
 const analysisLayer = L.layerGroup().addTo(map);
 
 /* Map panel: basemaps + layers + legend */
@@ -91,11 +105,11 @@ panel.onAdd = () => {
     </button>
     <div class="mp-body">
     <h4>Basemap</h4>
-    <div class="basemaps">${Object.keys(BASEMAPS).map((k, i) => `<button data-base="${k}" class="${i === 0 ? 'on' : ''}">${k}</button>`).join('')}</div>
+    <div class="basemaps">${Object.keys(BASEMAPS).map(k => `<button data-base="${k}" class="${BASEMAPS[k] === currentBase ? 'on' : ''}">${k}</button>`).join('')}</div>
     <h4 style="margin-top:10px">Layers</h4>
     <label><input type="checkbox" data-layer="requests" checked> Requests</label>
     <label><input type="checkbox" data-layer="districts" checked> Districts</label>
-    <label><input type="checkbox" data-layer="heat"> Hotspots</label>
+    <label><input type="checkbox" data-layer="heat" checked> Hotspots</label>
     <h4 style="margin-top:10px">Request status</h4>
     ${Object.values(STATUS).map(s => `<div class="legend-row"><span class="legend-dot" style="background:${s.color}"></span>${s.label}</div>`).join('')}
     <h4 style="margin-top:10px">Open requests per district</h4>
@@ -121,7 +135,7 @@ panel.onAdd = () => {
   });
   div.addEventListener('change', e => {
     const layer = e.target.dataset.layer, on = e.target.checked;
-    const target = { districts: [districtsWms, districtLabels], requests: [requestsLayer], heat: [heatLayer] }[layer];
+    const target = { districts: [districtsBase, districtLabels], requests: [requestsLayer], heat: [heatLayer] }[layer];
     target.forEach(l => on ? l.addTo(map) : map.removeLayer(l));
     if (on && layer === 'districts') { districtLabels.eachLayer(g => g.bringToBack()); setTimeout(declutterLabels, 0); }
     if (on && layer === 'heat') heatLayer.setLatLngs(state.heatPoints || []);
@@ -176,6 +190,12 @@ function buildCql() {
   }
   return parts.join(' AND ');
 }
+/* The same filter for one request, used by the static demo. */
+function matchesFilters(p) {
+  if (!state.categories.has(p.category) || !state.statuses.has(p.status)) return false;
+  if (state.priority !== 'all' && p.priority !== state.priority) return false;
+  return !state.periodDays || Date.parse(p.created_at) >= Date.now() - state.periodDays * 864e5;
+}
 
 function wfsUrl(typeName, extra = '') {
   return `${GS}/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=demo:${typeName}` +
@@ -189,9 +209,7 @@ function wfsUrl(typeName, extra = '') {
 async function loadRequests({ quiet = false } = {}) {
   const seq = state.requestsSeq = (state.requestsSeq || 0) + 1;
   try {
-    const res = await fetch(wfsUrl('service_requests', `&CQL_FILTER=${encodeURIComponent(buildCql())}`));
-    if (!res.ok) throw new Error(`WFS ${res.status}`);
-    const fc = await res.json();
+    const fc = await api.requests();
     if (seq !== state.requestsSeq) return false;
     const sig = fc.features.map(f => `${f.id}|${f.properties.status}|${f.properties.priority}|${f.properties.updated_at}`).sort().join(';');
     if (quiet && sig === state.requestsSig) return false;
@@ -212,9 +230,7 @@ async function loadDistricts({ quiet = false } = {}) {
   const seq = state.districtsSeq = (state.districtsSeq || 0) + 1;
   let fc;
   try {
-    const res = await fetch(wfsUrl('district_stats'));
-    if (!res.ok) throw new Error(`WFS ${res.status}`);
-    fc = await res.json();
+    fc = await api.districts();
   } catch (err) {
     console.error(err);
     if (!quiet && seq === state.districtsSeq) toast('Could not load the districts. Please refresh the page.', 'err');
@@ -247,7 +263,15 @@ async function loadDistricts({ quiet = false } = {}) {
   // District click areas share the canvas with the points: keep them underneath so points stay clickable.
   districtLabels.eachLayer(g => g.bringToBack());
   setTimeout(declutterLabels, 0);
-  districtsWms.setParams({ _ts: Date.now() });
+  if (STATIC) {
+    districtsBase.clearLayers();
+    L.geoJSON(state.districts, {
+      pane: 'districtsPane', renderer: districtsRenderer, interactive: false, attribution: 'Districts &copy; CAPMAS',
+      style: f => ({ color: '#0f766e', weight: 1.2, fillColor: DISTRICT_FILL(f.properties.open_requests), fillOpacity: 0.55 })
+    }).addTo(districtsBase);
+  } else {
+    districtsBase.setParams({ _ts: Date.now() });   // new map images with the new counts
+  }
   if (!state.districtBounds) { state.districtBounds = L.geoJSON(state.districts).getBounds(); fitDistricts(); }
   return true;
 }
@@ -301,8 +325,10 @@ async function backgroundRefresh() {
     if (await refreshAll({ quiet: true })) toast('Updated with the latest changes');
   } finally { state.refreshing = false; }
 }
-setInterval(backgroundRefresh, 15000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) backgroundRefresh(); });
+if (!STATIC) {   // the static demo has no other users whose changes could arrive
+  setInterval(backgroundRefresh, 15000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) backgroundRefresh(); });
+}
 
 /* Which district a [lng, lat] point falls in (ray casting on the loaded district polygons). */
 function inRing(x, y, ring) {
@@ -382,7 +408,7 @@ function wirePopup(popup, f) {
     const priority = root.querySelector('[data-f="priority"]').value;
     saveBtn.disabled = true;
     try {
-      await wfsUpdate(fid(f), { status, priority });
+      await api.update(fid(f), { status, priority });
       map.closePopup();
       toast(`Request #${rid(f)} updated`);
       refreshAll();
@@ -393,7 +419,7 @@ function wirePopup(popup, f) {
     map.closePopup();
     confirmDialog(`Request #${rid(f)} will be deleted permanently.`, async () => {
       try {
-        await wfsDelete(fid(f));
+        await api.remove(fid(f));
         toast(`Request #${rid(f)} deleted`);
         refreshAll();
       } catch (err) { toast(err.message, 'err'); }
@@ -505,6 +531,24 @@ function wfsDelete(featureId) {
     <ogc:Filter><ogc:FeatureId fid="${xmlEsc(featureId)}"/></ogc:Filter></wfs:Delete>`);
 }
 
+/* ------------------------------------------------------------- data source */
+/* Server version: reads through WFS, area searches through SQL views, edits through WFS-T.
+   Static demo: static-api.js answers the same calls from sample data kept in the browser. */
+async function getJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+const serverApi = {
+  requests: () => getJson(wfsUrl('service_requests', `&CQL_FILTER=${encodeURIComponent(buildCql())}`)),
+  districts: () => getJson(wfsUrl('district_stats')),
+  area: (view, params) => getJson(wfsUrl(view, viewparams({ ...params, ...filterParams() }))),
+  insert: wfsInsert,
+  update: wfsUpdate,
+  remove: wfsDelete
+};
+const api = STATIC ? window.createStaticApi({ matches: matchesFilters }) : serverApi;
+
 /* ------------------------------------------------------------ map "modes" */
 function setMode(mode, text) {
   state.mode = mode;
@@ -580,9 +624,7 @@ async function areaQuery(view, params) {
   const seq = state.analysisSeq = (state.analysisSeq || 0) + 1;
   let fc = { features: [] };
   if (state.categories.size && state.statuses.size) {   // nothing can match when a whole filter is off
-    const res = await fetch(wfsUrl(view, viewparams({ ...params, ...filterParams() })));
-    if (!res.ok) throw new Error(`WFS ${res.status}`);
-    fc = await res.json();
+    fc = await api.area(view, params);
   }
   return seq === state.analysisSeq ? fc : null;
 }
@@ -659,7 +701,7 @@ $('requestForm').addEventListener('submit', async e => {
   const { lat, lng } = state.pendingLatLng;
   btn.disabled = true;
   try {
-    const id = await wfsInsert({ category: $('fCategory').value, priority: $('fPriority').value, description, lat, lng });
+    const id = await api.insert({ category: $('fCategory').value, priority: $('fPriority').value, description, lat, lng });
     closeModal();
     toast(`Request #${id} saved`);
     await refreshAll();
@@ -723,6 +765,14 @@ new ResizeObserver(() => {
   clearTimeout(refitTimer);   // wait for the layout to settle, then frame once
   refitTimer = setTimeout(fitDistricts, 200);
 }).observe($('map'));
+
+// Static demo: a visitor's changes are kept in their browser; this link puts the sample data back.
+$('resetDemo')?.addEventListener('click', async e => {
+  e.preventDefault();
+  api.reset();
+  await refreshAll();
+  toast('Sample data restored');
+});
 
 refreshAll().then(() => {
   // ?demo=analysis shows the radius tool and the heatmap (used for README screenshots).

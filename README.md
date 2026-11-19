@@ -5,6 +5,9 @@ A production-shaped web GIS application for city service requests (roads, water,
 It reads, analyses and **edits** spatial data through standard OGC services, and the whole stack,
 including all GeoServer configuration, comes up with one command.
 
+**Live demo:** https://poulamories-cityops.static.hf.space (the browser-only version described under
+[Static online demo](#static-online-demo-free-static-hosting); the full stack runs locally with Docker).
+
 ![Dashboard](docs/dashboard.png)
 
 ![Spatial analysis and heatmap](docs/analysis.png)
@@ -54,6 +57,35 @@ docker compose logs -f publish   # wait for "Done"
 Open **http://localhost:8088**. GeoServer admin is at http://localhost:8088/geoserver (credentials from `.env`).
 Add `?demo=analysis` to the URL to open the dashboard with the radius tool and heatmap already shown.
 
+## Static online demo (free static hosting)
+
+`static/` builds a server-free version for static hosts (Hugging Face Static Spaces, GitHub Pages, Netlify):
+the same `app.js` switches to `static/static-api.js`, which answers the data calls in the browser from
+sample data exported from PostGIS (`static/data/*.json`). District counts, filters and the closest/radius
+searches follow the same rules as the SQL; a visitor's edits are kept in their own browser, with a
+"reset sample data" link. Dates move forward with time, so the "last N days" filters keep working.
+
+```bash
+python static/build.py static/dist     # then upload the contents of static/dist
+```
+
+## Deploy publicly (e.g. Oracle Cloud Always Free)
+
+`deploy/` packs PostGIS, GeoServer and Nginx into one container built on plain Ubuntu, so it runs on
+Intel/AMD and on ARM servers such as Oracle Cloud's free Ampere machines (it needs about 1.2 GB of memory).
+Caddy sits in front and serves HTTPS with a free Let's Encrypt certificate.
+
+- random passwords at every start; only the public map services are exposed (no GeoServer admin or REST)
+- visitors can add, edit and delete; the sample data is restored nightly at 03:00 UTC and on every restart
+- the first edit is warmed up during start-up, so it is fast for the first visitor
+
+```bash
+# on a fresh Ubuntu server, from the geo-stack folder (allow TCP 80/443 in the cloud firewall first):
+bash deploy/server-setup.sh <public-ip>     # -> https://cityops.<ip-with-dashes>.sslip.io
+```
+
+Test the same image locally: `docker build -f deploy/Dockerfile -t cityops . && docker run --rm -p 7860:7860 cityops`.
+
 ## Engineering details
 
 | Area | Detail |
@@ -82,6 +114,8 @@ geoserver/styles/*.sld           request status and district choropleth styles
 geoserver/views/*.xml            parameterised SQL views
 web/site/                        index.html, app.css, app.js
 web/nginx.conf, 40-editor-auth.sh   reverse proxy + server-side WFS-T auth
+static/                          browser-only demo: static-api.js, exported data, build.py
+deploy/                          single-container image (Intel/ARM), Caddy HTTPS, server setup script
 ```
 
 After editing an SLD, run `docker compose run --rm publish` to push the change.

@@ -112,5 +112,12 @@ SELECT d.id,
        count(r.id)                                                 AS total_requests,
        d.geom
 FROM districts d
-LEFT JOIN service_requests r ON ST_Contains(d.geom, r.geom)
+LEFT JOIN (
+    -- Each request counts in one district. Neighbouring outlines overlap by slivers after
+    -- simplification; a point in a sliver goes to the district with the lowest id.
+    SELECT DISTINCT ON (r.id) r.id, r.status, dd.id AS district_id
+    FROM service_requests r
+    JOIN districts dd ON ST_Contains(dd.geom, r.geom)
+    ORDER BY r.id, dd.id
+) r ON r.district_id = d.id
 GROUP BY d.id, d.name, d.name_ar, d.geom;

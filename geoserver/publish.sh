@@ -9,6 +9,8 @@ AUTH="$GS_USER:$GS_PASS"
 WS=demo
 NS_URI=http://cityops.example/demo
 STORE=postgis
+PG_HOST=${PG_HOST:-postgis}          # database host as GeoServer sees it
+SCRIPTS=${SCRIPTS_DIR:-/scripts}     # folder holding styles/ and views/
 
 echo "Waiting for GeoServer REST API..."
 until curl -sf -u "$AUTH" "$GS_URL/rest/about/version.json" >/dev/null; do sleep 5; done
@@ -28,7 +30,7 @@ call POST "$GS_URL/rest/workspaces/$WS/datastores" application/json "{
     \"name\": \"$STORE\",
     \"connectionParameters\": { \"entry\": [
       {\"@key\":\"dbtype\",\"\$\":\"postgis\"},
-      {\"@key\":\"host\",\"\$\":\"postgis\"},
+      {\"@key\":\"host\",\"\$\":\"$PG_HOST\"},
       {\"@key\":\"port\",\"\$\":\"5432\"},
       {\"@key\":\"database\",\"\$\":\"$PG_DB\"},
       {\"@key\":\"schema\",\"\$\":\"public\"},
@@ -44,9 +46,9 @@ call POST "$GS_URL/rest/workspaces/$WS/datastores" application/json "{
 # ----------------------------------------------------------------------- styles
 for style in request_status district_open_requests; do
   call POST "$GS_URL/rest/workspaces/$WS/styles?name=$style" application/vnd.ogc.sld+xml \
-    "$(cat /scripts/styles/$style.sld)"
+    "$(cat $SCRIPTS/styles/$style.sld)"
   [ "$code" = "201" ] || call PUT "$GS_URL/rest/workspaces/$WS/styles/$style" \
-    application/vnd.ogc.sld+xml "$(cat /scripts/styles/$style.sld)"
+    application/vnd.ogc.sld+xml "$(cat $SCRIPTS/styles/$style.sld)"
 done
 
 # ----------------------------------------------------------------------- layers
@@ -63,9 +65,9 @@ call PUT "$GS_URL/rest/layers/$WS:district_stats" application/json \
 # Parameters arrive through WFS "viewparams" and are checked by regex validators.
 for view in nearest_requests requests_within_radius; do
   call POST "$GS_URL/rest/workspaces/$WS/datastores/$STORE/featuretypes" text/xml \
-    "$(cat /scripts/views/$view.xml)"
+    "$(cat $SCRIPTS/views/$view.xml)"
   [ "$code" = "201" ] || call PUT "$GS_URL/rest/workspaces/$WS/datastores/$STORE/featuretypes/$view" text/xml \
-    "$(cat /scripts/views/$view.xml)"
+    "$(cat $SCRIPTS/views/$view.xml)"
 done
 
 # --------------------------------------------------------------- write security

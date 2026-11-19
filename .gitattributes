@@ -1,0 +1,4 @@
+# Keep LF line endings on every platform: the shell scripts, SQL and configs run inside Linux
+# containers, where Windows (CRLF) endings break them.
+* text=auto eol=lf
+*.png binary
