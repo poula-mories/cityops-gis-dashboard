@@ -48,7 +48,9 @@ input[type=range] { width: 100%; accent-color: var(--brand); margin: 6px 0 10px;
 /* ---------- layout ---------- */
 .layout { display: flex; height: calc(100% - 60px); }
 .sidebar { width: 380px; flex: none; overflow-y: auto; overflow-x: hidden; padding: 14px; display: flex; flex-direction: column; gap: 14px; border-right: 1px solid var(--line); background: var(--bg); }
-.map-wrap { flex: 1; position: relative; min-width: 0; }
+/* isolation: Leaflet's controls use z-index 1000; keep them inside the map's own layer so the
+   slide-out sidebar on small screens always covers them. */
+.map-wrap { flex: 1; position: relative; min-width: 0; isolation: isolate; }
 #map { position: absolute; inset: 0; }
 
 /* ---------- KPIs & cards ---------- */
